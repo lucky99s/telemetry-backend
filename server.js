@@ -8,6 +8,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const devices = new Map();
 const events = [];
+const commands = new Map();
 const HEARTBEAT_TIMEOUT_MS = Number(process.env.HEARTBEAT_TIMEOUT_MS || 30000);
 const INGEST_TOKEN = process.env.INGEST_TOKEN;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
@@ -128,6 +129,22 @@ app.post('/api/telemetry/register', requireIngest, receive('device_register'));
 app.post('/api/devices/heartbeat', requireIngest, receive('device_heartbeat'));
 app.get('/api/admin/devices', requireAdmin, (_req, res) => res.json(devicesView()));
 app.get('/api/admin/events', requireAdmin, (_req, res) => res.json(events));
+app.post('/api/admin/commands', requireAdmin, (req, res) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const deviceId = String(body.deviceId || '').trim();
+  const commandType = String(body.commandType || '').trim();
+  if (!deviceId || !commandType) return res.status(400).json({ ok: false, error: 'deviceId and commandType are required' });
+  const command = { id: crypto.randomUUID(), deviceId, commandType, parameters: body.parameters && typeof body.parameters === 'object' ? body.parameters : {}, createdAt: Date.now(), requiresUserConfirmation: true };
+  const queue = commands.get(deviceId) || []; queue.push(command); commands.set(deviceId, queue);
+  pushEvent({ id: crypto.randomUUID(), deviceId, eventType: 'admin_command_queued', timestamp: Date.now(), receivedAtEpochMs: Date.now(), payload: { commandType, requiresUserConfirmation: true } });
+  res.status(202).json({ ok: true, command });
+});
+app.get('/api/client/commands/:deviceId', requireIngest, (req, res) => {
+  const deviceId = String(req.params.deviceId || '').trim();
+  const queue = commands.get(deviceId) || []; commands.set(deviceId, []);
+  res.json({ ok: true, commands: queue });
+});
+
 app.use('/api', (req, res) => res.status(404).json({ ok: false, error: `API route not found: ${req.method} ${req.originalUrl}` }));
 app.use((err, _req, res, _next) => {
   if (err?.type === 'entity.parse.failed') return res.status(400).json({ ok: false, error: 'Invalid JSON request body' });
